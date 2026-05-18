@@ -129,6 +129,37 @@ Built with a fintech-inspired dark UI featuring glassmorphism cards, gold gradie
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+
+<div align="center">
+
+##  Model Evaluation Metrics
+
+</div>
+
+The prediction engine uses a **Logistic Regression classifier**
+trained on IPL ball-by-ball match data spanning IPL seasons from 2008–2020.
+
+### Dataset Split
+
+| Split Type | Ratio |
+|---|---|
+| Training Data | 80% |
+| Testing Data | 20% |
+
+---
+
+### Model Highlights
+
+- Real-time win probability prediction
+- Ball-by-ball dynamic recalculation
+- Match-state feature engineering
+- OneHotEncoded categorical preprocessing
+- Optimized scikit-learn pipeline
+- Context-aware chase prediction logic
+
+---
+
+> Detailed evaluation metrics and expanded cross-validation results will be added in future model benchmarking updates.
 <br/>
 
 ---
@@ -168,6 +199,37 @@ Built with a fintech-inspired dark UI featuring glassmorphism cards, gold gradie
 <table>
 <tr>
 <td width="50%" valign="top">
+<div align="center">
+
+##  UI Preview
+
+Experience the premium CricScope dashboard interface.
+
+</div>
+
+<p align="center">
+  <img src="assets/dashboard.png" width="900"/>
+</p>
+
+<p align="center">
+  <img src="assets/prediction.png" width="900"/>
+</p>
+
+<p align="center">
+  <img src="assets/analytics.png" width="900"/>
+</p>
+
+
+
+<div align="center">
+
+##  Live Demo Preview
+
+</div>
+
+<p align="center">
+  <img src="demo_.gif" width="900"/>
+</p>
 
 ### Prediction Engine
 
@@ -233,11 +295,17 @@ Built with a fintech-inspired dark UI featuring glassmorphism cards, gold gradie
 ```bash
 cricscope/
 │
+├── assets/
+│   ├── dashboard.png
+│   ├── prediction-page.png
+│   ├── analytics.png
+│   
 ├── app.py
 ├── matches.csv
 ├── deliveries.csv
 ├── requirements.txt
 └── README.md
+└── demo_.gif
 ```
 
 <br/>
