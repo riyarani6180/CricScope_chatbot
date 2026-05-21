@@ -7,6 +7,7 @@ import plotly.express as px
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.pipeline import Pipeline
+from sklearn.metrics import brier_score_loss, log_loss, accuracy_score
 import xgboost as xgb
 from xgboost import XGBClassifier
 
@@ -1127,6 +1128,83 @@ def train_model():
 pipe = train_model()
 
 # -----------------------------------
+# BACKTEST PIPELINE
+# -----------------------------------
+@st.cache_data(show_spinner="Running Backtest Pipeline...")
+def run_backtest():
+    matches = pd.read_csv("matches.csv")
+    deliveries = pd.read_csv("deliveries.csv")
+
+    # The dataset only contains IPL-2008 to IPL-2019, so we split at 2018 instead of 2021.
+    test_seasons = ['IPL-2018', 'IPL-2019']
+
+    df = deliveries.merge(matches, left_on='match_id', right_on='id')
+
+    total_df = df[df['inning'] == 1].groupby('match_id')['total_runs'].sum().reset_index()
+    total_df.rename(columns={'total_runs': 'target'}, inplace=True)
+
+    df = df.merge(total_df, on='match_id')
+    df = df[df['inning'] == 2]
+
+    df['current_score'] = df.groupby('match_id')['total_runs'].cumsum()
+    df['runs_left'] = df['target'] - df['current_score']
+    df['balls_left'] = 120 - (df['over'] * 6 + df['ball'])
+
+    df['player_dismissed'] = df['player_dismissed'].notna().astype(int)
+    df['wickets'] = df.groupby('match_id')['player_dismissed'].cumsum()
+    df['wickets'] = 10 - df['wickets']
+
+    df['over_mod'] = df['over'].replace(0, 0.1)
+    df['crr'] = df['current_score'] / (df['over_mod'] + df['ball'] / 6)
+    df['rrr'] = (df['runs_left'] * 6) / df['balls_left']
+
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # matches.csv has a string 'result' column (e.g. 'runs'/'wickets') — rename to avoid conflict
+    if 'result' in df.columns:
+        df.rename(columns={'result': 'match_result_type'}, inplace=True)
+
+    df['result'] = np.where(df['batting_team'] == df['winner'], 1, 0)
+
+    def get_phase(o):
+        if o <= 6: return 'Powerplay'
+        elif o <= 15: return 'Middle'
+        return 'Death'
+    
+    df['phase'] = df['over'].apply(get_phase)
+
+    final_df = df[['match_id', 'batting_team', 'bowling_team', 'city',
+                   'runs_left', 'balls_left', 'wickets',
+                   'target', 'crr', 'rrr', 'result', 'Season', 'over', 'ball', 'phase']].copy()
+    final_df.dropna(inplace=True)
+
+    train_df = final_df[~final_df['Season'].isin(test_seasons)]
+    test_df = final_df[final_df['Season'].isin(test_seasons)].copy()
+
+    features = ['batting_team', 'bowling_team', 'city', 'runs_left', 'balls_left', 'wickets', 'target', 'crr', 'rrr']
+    X_train = train_df[features]
+    y_train = train_df['result']
+    X_test = test_df[features]
+    y_test = test_df['result']
+
+    preprocessor = ColumnTransformer([
+        ('cat', OneHotEncoder(handle_unknown='ignore'), ['batting_team', 'bowling_team', 'city']),
+        ('num', 'passthrough', ['runs_left', 'balls_left', 'wickets', 'target', 'crr', 'rrr'])
+    ])
+
+    pipe = Pipeline([
+        ('preprocessor', preprocessor),
+        ('model', XGBClassifier(n_estimators=100, learning_rate=0.1, max_depth=6, random_state=42))
+    ])
+
+    pipe.fit(X_train, y_train)
+    
+    test_df['predicted_prob'] = pipe.predict_proba(X_test)[:, 1]
+    test_df['actual_outcome'] = y_test
+    
+    return test_df
+
+# -----------------------------------
 # SIDEBAR
 # -----------------------------------
 with st.sidebar:
@@ -1145,6 +1223,9 @@ with st.sidebar:
 
     if st.button("◉  Match Analysis", key="nav_analysis"):
         st.session_state.page = "Analysis"
+
+    if st.button("⚡ Model Performance", key="nav_perf"):
+        st.session_state.page = "Performance"
 
     st.markdown('<div style="height:1px; background:rgba(251,191,36,0.1); margin:20px 0;"></div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-section-label">Built By</div>', unsafe_allow_html=True)
@@ -1774,3 +1855,140 @@ if st.session_state.page == "Analysis":
     
     st.markdown('</div>', unsafe_allow_html=True)
     
+
+# -----------------------------------
+# PERFORMANCE PAGE
+# -----------------------------------
+elif st.session_state.page == "Performance":
+    st.markdown('<div class="hero-wrapper">', unsafe_allow_html=True)
+    st.markdown('<div class="hero-eyebrow">Walk-Forward Evaluation</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-title" style="font-size:clamp(36px,8vw,72px);margin-bottom:clamp(12px,2vw,16px);">Model Performance</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-subtitle">Backtesting the XGBoost win probability engine on unseen holdout seasons.</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    df_test = run_backtest()
+
+    # 1. Calculate Summary Metrics
+    preds = (df_test['predicted_prob'] > 0.5).astype(int)
+    acc = accuracy_score(df_test['actual_outcome'], preds)
+    brier = brier_score_loss(df_test['actual_outcome'], df_test['predicted_prob'])
+    logloss = log_loss(df_test['actual_outcome'], df_test['predicted_prob'])
+    n_matches = df_test['match_id'].nunique()
+    n_deliveries = len(df_test)
+
+    st.markdown('<div class="main-pad">', unsafe_allow_html=True)
+    
+    # Metrics Row
+    st.markdown("""
+        <div class="metrics-row" style="margin-bottom: 40px;">
+            <div class="metric-chip">
+                <div class="metric-chip-value">{:.1f}%</div>
+                <div class="metric-chip-label">Accuracy (50% Thresh)</div>
+            </div>
+            <div class="metric-chip">
+                <div class="metric-chip-value">{:.3f}</div>
+                <div class="metric-chip-label">Brier Score</div>
+            </div>
+            <div class="metric-chip">
+                <div class="metric-chip-value">{:.3f}</div>
+                <div class="metric-chip-label">Log Loss</div>
+            </div>
+            <div class="metric-chip">
+                <div class="metric-chip-value">{}</div>
+                <div class="metric-chip-label">Matches Tested</div>
+            </div>
+            <div class="metric-chip">
+                <div class="metric-chip-value">{:,}</div>
+                <div class="metric-chip-label">Deliveries Scored</div>
+            </div>
+        </div>
+    """.format(acc*100, brier, logloss, n_matches, n_deliveries), unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown('<div class="section-title" style="font-size:24px;">Calibration Plot</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-desc" style="margin-bottom:20px;">Actual win rate vs predicted probability (10 bins). A perfect model hugs the diagonal.</div>', unsafe_allow_html=True)
+        
+        # Calibration calculation
+        df_test['prob_bin'] = pd.cut(df_test['predicted_prob'], bins=np.linspace(0, 1, 11), labels=False)
+        cal_df = df_test.groupby('prob_bin').agg(
+            mean_pred=('predicted_prob', 'mean'),
+            actual_rate=('actual_outcome', 'mean'),
+            count=('actual_outcome', 'count')
+        ).reset_index()
+        cal_df['bin_label'] = [f"{i*10}-{(i+1)*10}%" for i in cal_df['prob_bin']]
+
+        fig_cal = px.scatter(
+            cal_df, x='mean_pred', y='actual_rate', size='count',
+            labels={'mean_pred': 'Predicted Probability', 'actual_rate': 'Actual Win Rate'}
+        )
+        # Add diagonal
+        fig_cal.add_shape(type="line", x0=0, y0=0, x1=1, y1=1, line=dict(color="rgba(251,191,36,0.3)", dash="dash"))
+        
+        fig_cal.update_traces(marker=dict(color="#f59e0b", line=dict(color="#fbbf24", width=2)))
+        fig_cal.update_layout(
+            template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#e2e8f0", family="DM Sans"),
+            xaxis_gridcolor="rgba(251,191,36,0.1)", yaxis_gridcolor="rgba(251,191,36,0.1)",
+            xaxis_linecolor="rgba(251,191,36,0.2)", yaxis_linecolor="rgba(251,191,36,0.2)",
+            xaxis_range=[-0.05, 1.05], yaxis_range=[-0.05, 1.05]
+        )
+        st.plotly_chart(fig_cal, use_container_width=True)
+
+    with col2:
+        st.markdown('<div class="section-title" style="font-size:24px;">Brier Score Over Time</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-desc" style="margin-bottom:20px;">Model drift tracking per season. Lower scores are better.</div>', unsafe_allow_html=True)
+        
+        # Brier over time
+        brier_df = df_test.groupby('Season').apply(
+            lambda x: brier_score_loss(x['actual_outcome'], x['predicted_prob'])
+        ).reset_index(name='brier_score')
+        
+        fig_brier = px.line(
+            brier_df, x='Season', y='brier_score', markers=True,
+            labels={'brier_score': 'Brier Score Loss'}
+        )
+        fig_brier.update_traces(
+            line_color="#fbbf24", line_width=3, marker_color="#f59e0b", marker_size=10
+        )
+        fig_brier.update_layout(
+            template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#e2e8f0", family="DM Sans"),
+            xaxis_gridcolor="rgba(251,191,36,0.1)", yaxis_gridcolor="rgba(251,191,36,0.1)",
+            xaxis_linecolor="rgba(251,191,36,0.2)", yaxis_linecolor="rgba(251,191,36,0.2)",
+            yaxis_range=[0.1, 0.3]
+        )
+        st.plotly_chart(fig_brier, use_container_width=True)
+
+    st.markdown('<div class="section-title" style="font-size:24px; margin-top: 30px;">Accuracy By Match Phase</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-desc" style="margin-bottom:20px;">Powerplay (1-6), Middle (7-15), Death (16-20).</div>', unsafe_allow_html=True)
+    
+    # Phase accuracy
+    df_test['pred_binary'] = (df_test['predicted_prob'] > 0.5).astype(int)
+    phase_df = df_test.groupby('phase').apply(
+        lambda x: accuracy_score(x['actual_outcome'], x['pred_binary'])
+    ).reset_index(name='accuracy')
+    
+    # Sort logically
+    phase_df['phase'] = pd.Categorical(phase_df['phase'], categories=['Powerplay', 'Middle', 'Death'], ordered=True)
+    phase_df = phase_df.sort_values('phase')
+    
+    fig_phase = px.bar(
+        phase_df, x='phase', y='accuracy', text=phase_df['accuracy'].apply(lambda x: f"{x*100:.1f}%"),
+        labels={'phase': 'Match Phase', 'accuracy': 'Accuracy'}
+    )
+    fig_phase.update_traces(
+        marker_color="rgba(251,191,36,0.8)", marker_line_color="#f59e0b",
+        marker_line_width=2, textposition='outside'
+    )
+    fig_phase.update_layout(
+        template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#e2e8f0", family="DM Sans"),
+        xaxis_gridcolor="rgba(251,191,36,0.1)", yaxis_gridcolor="rgba(251,191,36,0.1)",
+        xaxis_linecolor="rgba(251,191,36,0.2)", yaxis_linecolor="rgba(251,191,36,0.2)",
+        yaxis_range=[0.5, 0.9]
+    )
+    st.plotly_chart(fig_phase, use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)

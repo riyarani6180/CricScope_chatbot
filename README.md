@@ -234,6 +234,8 @@ Experience the premium CricScope dashboard interface.
 ### Prediction Engine
 
 - Real-time win probability predictions
+- Walk-forward backtesting model evaluation (train on historical, test on recent seasons)
+- Calibration plotting and Brier score model drift tracking
 - Computes CRR, RRR, wickets, balls remaining
 - Confidence scoring system
 - Dynamic match-state analytics
