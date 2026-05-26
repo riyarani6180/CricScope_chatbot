@@ -872,6 +872,13 @@ def train_model():
 
 pipe = train_model()
 
+def safe_calculate_rates(score, target, overs):
+    runs_left = target - score
+    balls_left = max(120 - (overs * 6), 0)
+    crr = score / overs if overs > 0 else 0.0
+    rrr = (runs_left * 6) / balls_left if balls_left > 0 else 0.0
+    return runs_left, balls_left, crr, rrr
+
 # -----------------------------------
 # SIDEBAR
 # -----------------------------------
@@ -1154,10 +1161,7 @@ if st.session_state.page == "Analysis":
 
     # ---- PREDICTION OUTPUT ----
     if analyze:
-        runs_left = target - score
-        balls_left = max(120 - (overs * 6), 0)
-        crr = score / overs if overs > 0 else 0.0
-        rrr = (runs_left * 6) / balls_left if balls_left > 0 else 0.0
+        runs_left, balls_left, crr, rrr = safe_calculate_rates(score, target, overs)
 
         input_df = pd.DataFrame({
             'batting_team': [batting_team],
