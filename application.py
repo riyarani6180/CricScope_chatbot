@@ -2,11 +2,20 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import time
+import os
+import joblib
+import logging
 
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+
+logging.basicConfig(level=logging.INFO)
 
 # -----------------------------------
 # CONFIG
@@ -20,6 +29,8 @@ if "page" not in st.session_state:
     st.session_state.page = "Dashboard"
 if "last_prediction" not in st.session_state:
     st.session_state.last_prediction = None
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = "logistic"
 
 # -----------------------------------
 # LUXURY CSS
@@ -768,6 +779,82 @@ section[data-testid="stSidebar"] a:active {
     color: rgba(200, 185, 140, 0.3);
 }
 
+/* ---- PERFORMANCE REPORT & CONFUSION MATRIX ---- */
+.matrix-wrapper {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 20px;
+    padding: 32px;
+    backdrop-filter: blur(20px);
+}
+.matrix-grid {
+    display: grid;
+    grid-template-columns: 120px 1fr 1fr;
+    grid-gap: 16px;
+    margin-top: 16px;
+    align-items: center;
+    text-align: center;
+}
+.matrix-header {
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: rgba(212,175,55,0.6);
+    font-weight: 500;
+    padding: 10px 0;
+}
+.matrix-label {
+    font-size: 11px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: rgba(220,210,185,0.4);
+    text-align: left;
+    font-weight: 500;
+}
+.matrix-cell {
+    padding: 24px;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    transition: all 0.25s ease;
+}
+.matrix-cell.correct {
+    background: rgba(212,175,55,0.06);
+    border: 1px solid rgba(212,175,55,0.25);
+}
+.matrix-cell.correct:hover {
+    background: rgba(212,175,55,0.1);
+    border-color: rgba(212,175,55,0.45);
+    transform: translateY(-2px);
+}
+.matrix-cell.incorrect {
+    background: rgba(214,40,40,0.03);
+    border: 1px solid rgba(214,40,40,0.15);
+}
+.matrix-cell.incorrect:hover {
+    background: rgba(214,40,40,0.06);
+    border-color: rgba(214,40,40,0.3);
+    transform: translateY(-2px);
+}
+.matrix-value {
+    font-family: 'DM Mono', monospace;
+    font-size: 32px;
+    font-weight: 500;
+    color: #f0e8cc;
+}
+.matrix-cell.incorrect .matrix-value {
+    color: #e57373;
+}
+.matrix-cell-lbl {
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-top: 6px;
+    color: rgba(220,210,185,0.4);
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -812,8 +899,25 @@ team_data = {
 # -----------------------------------
 # MODEL
 # -----------------------------------
+def get_model(model_name='logistic'):
+    if model_name == 'logistic':
+        return LogisticRegression(max_iter=1000)
+    elif model_name == 'random_forest':
+        return RandomForestClassifier(n_estimators=100, random_state=42)
+    elif model_name == 'xgboost':
+        return XGBClassifier(n_estimators=100, random_state=42, use_label_encoder=False, eval_metric='logloss')
+    return LogisticRegression(max_iter=1000)
+
 @st.cache_resource
-def train_model():
+def train_model(model_name='logistic'):
+    model_path = f"{model_name}_model.pkl"
+
+    if os.path.exists(model_path):
+        try:
+            return joblib.load(model_path)
+        except Exception as e:
+            logging.error(f"Failed to load cached model from {model_path}: {e}")
+
     matches = pd.read_csv("matches.csv")
     deliveries = pd.read_csv("deliveries.csv")
 
@@ -827,9 +931,7 @@ def train_model():
 
     df['current_score'] = df.groupby('match_id')['total_runs'].cumsum()
     df['runs_left'] = df['target'] - df['current_score']
-    # Correct balls_left calculation using legal deliveries bowled:
-    # balls_bowled = ((over - 1) * 6) + ball
-    # and ensuring it is never negative.
+    
     balls_bowled = ((df['over'] - 1) * 6) + df['ball']
     df['balls_left'] = (120 - balls_bowled).clip(lower=0)
 
@@ -837,16 +939,11 @@ def train_model():
     df['wickets'] = df.groupby('match_id')['player_dismissed'].cumsum()
     df['wickets'] = 10 - df['wickets']
 
-    # Correct current run rate (crr) using correct overs bowled denominator:
-    # (over - 1) + (ball / 6)
     overs_bowled = (df['over'] - 1) + (df['ball'] / 6)
     df['crr'] = np.where(overs_bowled > 0, df['current_score'] / overs_bowled, 0.0)
-
-    # Correct required run rate (rrr) avoiding division by zero when balls_left is 0
     df['rrr'] = np.where(df['balls_left'] > 0, (df['runs_left'] * 6) / df['balls_left'], 0.0)
 
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
-
     df['result'] = np.where(df['batting_team'] == df['winner'], 1, 0)
 
     final_df = df[['batting_team', 'bowling_team', 'city',
@@ -857,6 +954,10 @@ def train_model():
     X = final_df.drop('result', axis=1)
     y = final_df['result']
 
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
     preprocessor = ColumnTransformer([
         ('cat', OneHotEncoder(handle_unknown='ignore'), ['batting_team', 'bowling_team', 'city']),
         ('num', 'passthrough', ['runs_left', 'balls_left', 'wickets', 'target', 'crr', 'rrr'])
@@ -864,13 +965,103 @@ def train_model():
 
     pipe = Pipeline([
         ('preprocessor', preprocessor),
-        ('model', LogisticRegression(max_iter=1000))
+        ('model', get_model(model_name))
     ])
 
-    pipe.fit(X, y)
+    # Fit pipeline before evaluations to avoid UnboundLocalError
+    pipe.fit(X_train, y_train)
+    predictions = pipe.predict(X_test)
+
+    # Logging evaluations safely
+    try:
+        scores = cross_val_score(pipe, X_train, y_train, cv=5)
+        logging.info(f"Model trained: {model_name}")
+        logging.info(f"Cross Validation Scores: {scores}")
+        logging.info(f"Average CV Accuracy: {scores.mean():.4f}")
+        logging.info(f"Test Accuracy: {accuracy_score(y_test, predictions):.4f}")
+    except Exception as eval_error:
+        logging.warning(f"Evaluation failed: {eval_error}")
+
+    try:
+        joblib.dump(pipe, model_path)
+    except Exception as dump_error:
+        logging.error(f"Failed to dump model to {model_path}: {dump_error}")
+
     return pipe
 
-pipe = train_model()
+@st.cache_resource
+def evaluate_model(model_name='logistic'):
+    pipe = train_model(model_name)
+
+    matches = pd.read_csv("matches.csv")
+    deliveries = pd.read_csv("deliveries.csv")
+
+    df = deliveries.merge(matches, left_on='match_id', right_on='id')
+
+    total_df = df[df['inning'] == 1].groupby('match_id')['total_runs'].sum().reset_index()
+    total_df.rename(columns={'total_runs': 'target'}, inplace=True)
+
+    df = df.merge(total_df, on='match_id')
+    df = df[df['inning'] == 2]
+
+    df['current_score'] = df.groupby('match_id')['total_runs'].cumsum()
+    df['runs_left'] = df['target'] - df['current_score']
+    
+    balls_bowled = ((df['over'] - 1) * 6) + df['ball']
+    df['balls_left'] = (120 - balls_bowled).clip(lower=0)
+
+    df['player_dismissed'] = df['player_dismissed'].notna().astype(int)
+    df['wickets'] = df.groupby('match_id')['player_dismissed'].cumsum()
+    df['wickets'] = 10 - df['wickets']
+
+    overs_bowled = (df['over'] - 1) + (df['ball'] / 6)
+    df['crr'] = np.where(overs_bowled > 0, df['current_score'] / overs_bowled, 0.0)
+    df['rrr'] = np.where(df['balls_left'] > 0, (df['runs_left'] * 6) / df['balls_left'], 0.0)
+
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df['result'] = np.where(df['batting_team'] == df['winner'], 1, 0)
+
+    final_df = df[['batting_team', 'bowling_team', 'city',
+                   'runs_left', 'balls_left', 'wickets',
+                   'target', 'crr', 'rrr', 'result']]
+    final_df.dropna(inplace=True)
+
+    X = final_df.drop('result', axis=1)
+    y = final_df['result']
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    predictions = pipe.predict(X_test)
+
+    accuracy = accuracy_score(y_test, predictions)
+    precision = precision_score(y_test, predictions)
+    recall = recall_score(y_test, predictions)
+    f1 = f1_score(y_test, predictions)
+
+    tn, fp, fn, tp = confusion_matrix(y_test, predictions).ravel()
+
+    scores = cross_val_score(pipe, X_train, y_train, cv=5)
+    cv_mean = scores.mean()
+    cv_std = scores.std()
+
+    return {
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1': float(f1),
+        'tn': int(tn),
+        'fp': int(fp),
+        'fn': int(fn),
+        'tp': int(tp),
+        'cv_mean': float(cv_mean),
+        'cv_std': float(cv_std),
+        'cv_scores': scores.tolist()
+    }
+
+selected_model_key = st.session_state.get('selected_model', 'logistic')
+pipe = train_model(selected_model_key)
 
 # -----------------------------------
 # SIDEBAR
@@ -890,6 +1081,26 @@ with st.sidebar:
 
     if st.button("◉  Match Analysis", key="nav_analysis"):
         st.session_state.page = "Analysis"
+
+    if st.button("⚖  Model Performance", key="nav_performance"):
+        st.session_state.page = "Performance"
+
+    st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-label">Model Configuration</div>', unsafe_allow_html=True)
+
+    model_options = {
+        "Logistic Regression": "logistic",
+        "Random Forest": "random_forest",
+        "XGBoost": "xgboost"
+    }
+
+    selected_model_name = st.selectbox(
+        "Choose Prediction Model",
+        options=list(model_options.keys()),
+        index=list(model_options.values()).index(st.session_state.selected_model),
+        key="selected_model_widget"
+    )
+    st.session_state.selected_model = model_options[selected_model_name]
 
     st.markdown('<div style="height:1px; background:rgba(212,175,55,0.08); margin:20px 0;"></div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-section-label">Built By</div>', unsafe_allow_html=True)
@@ -1014,6 +1225,158 @@ if st.session_state.page == "Dashboard":
             </div>
         </div>
     """, unsafe_allow_html=True)
+
+# -----------------------------------
+# MODEL PERFORMANCE PAGE
+# -----------------------------------
+elif st.session_state.page == "Performance":
+
+    st.markdown("""
+        <div class="hero-wrapper" style="padding-bottom:32px;">
+            <div class="hero-eyebrow">Classifier Diagnostic Metrics</div>
+            <div class="hero-title" style="font-size:clamp(36px,4vw,56px); margin-bottom:10px;">Model Report</div>
+            <div class="hero-subtitle">Comprehensive performance metrics, cross-validation scoring, and visual confusion matrix for the active model.</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="main-pad">', unsafe_allow_html=True)
+    st.markdown('<div style="height:24px;"></div>', unsafe_allow_html=True)
+
+    with st.spinner("Analyzing active model parameters..."):
+        metrics = evaluate_model(st.session_state.selected_model)
+
+    # Convert model key to readable label
+    model_name_map = {
+        "logistic": "Logistic Regression",
+        "random_forest": "Random Forest",
+        "xgboost": "XGBoost"
+    }
+    active_model_name = model_name_map.get(st.session_state.selected_model, "Logistic Regression")
+
+    # Metrics Row
+    col_m1, col_m2, col_m3 = st.columns(3, gap="medium")
+    
+    with col_m1:
+        st.markdown(f"""
+            <div class="stat-pill">
+                <div class="stat-value">{metrics['accuracy']:.2%}</div>
+                <div class="stat-label">Test Accuracy</div>
+                <div style="font-size:11px; color:rgba(220,210,185,0.45); margin-top:8px; line-height:1.4;">
+                    Percentage of correct predictions on unseen test split data.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+    with col_m2:
+        st.markdown(f"""
+            <div class="stat-pill">
+                <div class="stat-value">{metrics['cv_mean']:.2%}</div>
+                <div class="stat-label">5-Fold CV Mean Accuracy</div>
+                <div style="font-size:11px; color:rgba(220,210,185,0.45); margin-top:8px; line-height:1.4;">
+                    Average validation score across 5 stratified folds. (SD: &plusmn;{metrics['cv_std']:.2%})
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+    with col_m3:
+        st.markdown(f"""
+            <div class="stat-pill">
+                <div class="stat-value">{metrics['f1']:.2%}</div>
+                <div class="stat-label">F1-Score</div>
+                <div style="font-size:11px; color:rgba(220,210,185,0.45); margin-top:8px; line-height:1.4;">
+                    Harmonic mean of precision and recall. Robust measure of model accuracy.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<div style="height:32px;"></div>', unsafe_allow_html=True)
+
+    # Detailed Analysis Columns
+    col_det, col_cm = st.columns([1.1, 1.3], gap="medium")
+    
+    with col_det:
+        st.markdown(f"""
+            <div class="input-card" style="height: 100%;">
+                <div class="input-label" style="font-size:11px;">Evaluation Deep Dive</div>
+                <div style="margin-bottom: 24px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <span style="font-family:'Cormorant Garamond',serif; font-size:20px; color:#f0e8cc; font-weight:500;">Precision</span>
+                        <span style="font-family:'DM Mono',monospace; font-size:22px; color:#d4af37; font-weight:500;">{metrics['precision']:.2%}</span>
+                    </div>
+                    <p style="font-size:13px; color:rgba(220,210,185,0.5); line-height:1.5; margin:0;">
+                        Out of all matches the model predicted as a win, how many were actual wins? High precision minimizes false positives.
+                    </p>
+                </div>
+                <div style="margin-bottom: 24px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <span style="font-family:'Cormorant Garamond',serif; font-size:20px; color:#f0e8cc; font-weight:500;">Recall (Sensitivity)</span>
+                        <span style="font-family:'DM Mono',monospace; font-size:22px; color:#d4af37; font-weight:500;">{metrics['recall']:.2%}</span>
+                    </div>
+                    <p style="font-size:13px; color:rgba(220,210,185,0.5); line-height:1.5; margin:0;">
+                        Out of all actual wins that occurred in the dataset, how many did the model correctly identify? High recall minimizes false negatives.
+                    </p>
+                </div>
+                <div>
+                    <div style="font-size:9px; letter-spacing:1.5px; text-transform:uppercase; color:rgba(212,175,55,0.35); margin-bottom:6px;">Model Settings</div>
+                    <div style="font-family:'DM Mono',monospace; font-size:12px; color:rgba(220,210,185,0.6); background:rgba(0,0,0,0.2); padding:10px 14px; border-radius:8px; border:1px solid rgba(212,175,55,0.06); line-height:1.5;">
+                        Active Classifier: {active_model_name}<br>
+                        CV Strategy: 5-Fold Stratified K-Fold
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+    with col_cm:
+        st.markdown(f"""
+            <div class="matrix-wrapper">
+                <div class="input-label" style="font-size:11px; margin-bottom: 8px;">Confusion Matrix</div>
+                <div style="font-size:12px; color:rgba(220,210,185,0.45); margin-bottom: 20px; line-height:1.4;">
+                    A tabular layout visualizing classification hits and misses. Gold-bordered diagonal cells represent correct predictions.
+                </div>
+                <div class="matrix-grid">
+                    <div class="matrix-header">Actual \\ Pred</div>
+                    <div class="matrix-header">Bowl Win (0)</div>
+                    <div class="matrix-header">Bat Win (1)</div>
+                    
+                    <div class="matrix-label">Bowl Win (0)</div>
+                    <div class="matrix-cell correct">
+                        <div class="matrix-value">{metrics['tn']:,}</div>
+                        <div class="matrix-cell-lbl">True Neg</div>
+                    </div>
+                    <div class="matrix-cell incorrect">
+                        <div class="matrix-value">{metrics['fp']:,}</div>
+                        <div class="matrix-cell-lbl">False Pos</div>
+                    </div>
+                    
+                    <div class="matrix-label">Bat Win (1)</div>
+                    <div class="matrix-cell incorrect">
+                        <div class="matrix-value">{metrics['fn']:,}</div>
+                        <div class="matrix-cell-lbl">False Neg</div>
+                    </div>
+                    <div class="matrix-cell correct">
+                        <div class="matrix-value">{metrics['tp']:,}</div>
+                        <div class="matrix-cell-lbl">True Pos</div>
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # Fold scores display
+    st.markdown('<div style="height:32px;"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="input-label" style="font-size:11px; margin-bottom: 12px; padding-left: 4px;">Stratified 5-Fold Scores</div>', unsafe_allow_html=True)
+    
+    cv_cols = st.columns(5)
+    for idx, score in enumerate(metrics['cv_scores']):
+        with cv_cols[idx]:
+            st.markdown(f"""
+                <div style="background:rgba(255,255,255,0.015); border:1px solid rgba(255,255,255,0.05);
+                            border-radius:10px; padding:12px; text-align:center;">
+                    <div style="font-size:9px; letter-spacing:1px; text-transform:uppercase; color:rgba(220,210,185,0.35); margin-bottom:4px;">Fold {idx+1}</div>
+                    <div style="font-family:'DM Mono',monospace; font-size:15px; color:#e8d89a; font-weight:500;">{score:.2%}</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # -----------------------------------
 # ANALYSIS PAGE
