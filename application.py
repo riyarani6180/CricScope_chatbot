@@ -27,6 +27,7 @@ import time
 import os
 import joblib
 import logging
+import textwrap
 
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
@@ -1336,13 +1337,13 @@ if st.session_state.page == "Dashboard":
 # -----------------------------------
 elif st.session_state.page == "Performance":
 
-    st.markdown("""
+    st.markdown(textwrap.dedent("""
         <div class="hero-wrapper" style="padding-bottom:32px;">
             <div class="hero-eyebrow">Classifier Diagnostic Metrics</div>
             <div class="hero-title" style="font-size:clamp(36px,4vw,56px); margin-bottom:10px;">Model Report</div>
             <div class="hero-subtitle">Comprehensive performance metrics, cross-validation scoring, and visual confusion matrix for the active model.</div>
         </div>
-    """, unsafe_allow_html=True)
+    """), unsafe_allow_html=True)
 
     st.markdown('<div class="main-pad">', unsafe_allow_html=True)
     st.markdown('<div style="height:24px;"></div>', unsafe_allow_html=True)
@@ -1362,7 +1363,7 @@ elif st.session_state.page == "Performance":
     col_m1, col_m2, col_m3 = st.columns(3, gap="medium")
     
     with col_m1:
-        st.markdown(f"""
+        st.markdown(textwrap.dedent(f"""
             <div class="stat-pill">
                 <div class="stat-value">{metrics['accuracy']:.2%}</div>
                 <div class="stat-label">Test Accuracy</div>
@@ -1370,10 +1371,10 @@ elif st.session_state.page == "Performance":
                     Percentage of correct predictions on unseen test split data.
                 </div>
             </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
         
     with col_m2:
-        st.markdown(f"""
+        st.markdown(textwrap.dedent(f"""
             <div class="stat-pill">
                 <div class="stat-value">{metrics['cv_mean']:.2%}</div>
                 <div class="stat-label">5-Fold CV Mean Accuracy</div>
@@ -1381,10 +1382,10 @@ elif st.session_state.page == "Performance":
                     Average validation score across 5 stratified folds. (SD: &plusmn;{metrics['cv_std']:.2%})
                 </div>
             </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
         
     with col_m3:
-        st.markdown(f"""
+        st.markdown(textwrap.dedent(f"""
             <div class="stat-pill">
                 <div class="stat-value">{metrics['f1']:.2%}</div>
                 <div class="stat-label">F1-Score</div>
@@ -1392,7 +1393,7 @@ elif st.session_state.page == "Performance":
                     Harmonic mean of precision and recall. Robust measure of model accuracy.
                 </div>
             </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
 
     st.markdown('<div style="height:32px;"></div>', unsafe_allow_html=True)
 
@@ -1400,7 +1401,7 @@ elif st.session_state.page == "Performance":
     col_det, col_cm = st.columns([1.1, 1.3], gap="medium")
     
     with col_det:
-        st.markdown(f"""
+        st.markdown(textwrap.dedent(f"""
             <div class="input-card" style="height: 100%;">
                 <div class="input-label" style="font-size:11px;">Evaluation Deep Dive</div>
                 <div style="margin-bottom: 24px;">
@@ -1429,10 +1430,10 @@ elif st.session_state.page == "Performance":
                     </div>
                 </div>
             </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
         
     with col_cm:
-        st.markdown(f"""
+        st.markdown(textwrap.dedent(f"""
             <div class="matrix-wrapper">
                 <div class="input-label" style="font-size:11px; margin-bottom: 8px;">Confusion Matrix</div>
                 <div style="font-size:12px; color:rgba(220,210,185,0.45); margin-bottom: 20px; line-height:1.4;">
@@ -1464,7 +1465,7 @@ elif st.session_state.page == "Performance":
                     </div>
                 </div>
             </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
 
     # Fold scores display
     st.markdown('<div style="height:32px;"></div>', unsafe_allow_html=True)
@@ -1473,13 +1474,13 @@ elif st.session_state.page == "Performance":
     cv_cols = st.columns(5)
     for idx, score in enumerate(metrics['cv_scores']):
         with cv_cols[idx]:
-            st.markdown(f"""
+            st.markdown(textwrap.dedent(f"""
                 <div style="background:rgba(255,255,255,0.015); border:1px solid rgba(255,255,255,0.05);
                             border-radius:10px; padding:12px; text-align:center;">
                     <div style="font-size:9px; letter-spacing:1px; text-transform:uppercase; color:rgba(220,210,185,0.35); margin-bottom:4px;">Fold {idx+1}</div>
                     <div style="font-family:'DM Mono',monospace; font-size:15px; color:#e8d89a; font-weight:500;">{score:.2%}</div>
                 </div>
-            """, unsafe_allow_html=True)
+            """), unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
